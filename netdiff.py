@@ -29,9 +29,6 @@ def main():
     baseline_netlist = Netlist(arguments['<file1>'])
     compare_netlist = Netlist(arguments['<file2>'])
 
-    baseline_netlist.dump()
-    compare_netlist.dump()
-
     compare_netlist.diff(baseline_netlist)
 
     baseline_netlist.dump_diff()
@@ -53,25 +50,33 @@ class Net:
 
     def add_nodes(self, nodes):
         self.nodes += nodes
-        # Pads nodes are normally sorted, but sort anyway to guarantee order
-        #    for netlist operations like diff
         self.nodes.sort()
 
-    def diff_str(self):
+    def diff_str(self, max_width=25, enable_pad=False):
         diff_color = Fore.RED if self.is_baseline else Fore.GREEN
         diff_symbol = '-' if self.is_baseline else '+'
 
+        text_manager = TextManager(max_width, enable_pad)
+
         if self.net_differs:
-            return diff_color + diff_symbol + str(self) + Style.RESET_ALL
+            text_manager.append(f'{diff_symbol}{self.name}: ')
+            for node in self.nodes:
+                text_manager.append(f'{node}, ')
+            text_manager.color_all(diff_color)
+            return text_manager.render()
         if not self.differing_nodes:
-            return ' ' + str(self)
-        formatted_nodes = []
+            text_manager.append(f' {self.name}: ')
+            for node in self.nodes:
+                text_manager.append(f'{node}, ')
+            return text_manager.render()
+
+        text_manager.append(f' {self.name}: ')
         for node in self.nodes:
             if node in self.differing_nodes:
-                formatted_nodes.append(diff_color + diff_symbol + node + Style.RESET_ALL)
+                text_manager.append(f'{diff_symbol}{node}, ', diff_color)
             else:
-                formatted_nodes.append(node)
-        return f' {self.name}: {", ".join(formatted_nodes)}'
+                text_manager.append(f'{node}, ')
+        return text_manager.render()
 
     def __repr__(self):
         return f"Net('{self.name}', {self.nodes})"
@@ -106,8 +111,6 @@ class Netlist:
                     nodes = line.strip().split(' ')
                     net.add_nodes(nodes)
 
-        # Pads netlists are normally sorted, but sort anyway to guarantee order
-        #    for netlist operations like diff
         self.nets.sort(key=lambda x: x.name)
 
     def dump(self):
@@ -174,6 +177,53 @@ class Netlist:
 
     def advance_traverse(self):
         self._index_next_net += 1
+
+
+class TextManager():
+
+    def __init__(self, max_width=25, enable_pad=False, indent=4):
+        self.lines = []
+        self.line = ''
+        self.line_width = 0
+        self.max_width = max_width
+        self.enable_pad = enable_pad
+        self.indent = indent
+
+    def append(self, text, color=None):
+        if len(text) + self.line_width <= self.max_width:
+            # No wrap
+            self.line = self._append_to_current_line(self.line, text, color)
+        elif self.line_width == 0:
+            # Current line is already blank and the requested text does not fit,
+            # so use it as-is.
+            self.line = self._append_to_current_line('', text, color)
+        else:
+            # Wrap text
+            self._commit_line()
+            self.line = self._append_to_current_line(' ' * self.indent, text, color)
+        # print(f'>>>{self.line}<<< {self.line_width}')
+
+    def render(self):
+        self._commit_line()
+        return '\n'.join(self.lines)
+
+    def _commit_line(self):
+        if self.line_width != 0:
+            if self.enable_pad and self.line_width < self.max_width:
+                self.line += ' ' * (self.max_width - self.line_width)
+            self.lines.append(self.line)
+        self.line = ''
+        self.line_width = 0
+
+    def _append_to_current_line(self, text, append_text, color):
+        self.line_width += len(append_text)
+        if color is not None:
+            return text + color + append_text + Style.RESET_ALL
+        return text + append_text
+
+    def color_all(self, color):
+        self._commit_line()
+        self.lines = [color + line + Style.RESET_ALL for line in self.lines]
 
 if __name__ == '__main__':
     main()
