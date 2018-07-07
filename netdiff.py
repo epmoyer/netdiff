@@ -31,8 +31,12 @@ def main():
 
     compare_netlist.diff(baseline_netlist)
 
-    baseline_netlist.dump_diff()
-    compare_netlist.dump_diff()
+    # baseline_netlist.dump_diff()
+    # compare_netlist.dump_diff()
+    # print()
+
+    column_width = 25
+    compare_netlist.dump_parallel_diff(baseline_netlist, column_width)
     
 
 class Net:
@@ -123,11 +127,50 @@ class Netlist:
         for net in self.nets:
             print(indent(net.diff_str(), '   '))
 
+    def dump_parallel_diff(self, baseline_netlist, column_width):
+        compare_netlist = self
+
+        compare_netlist.reset_traverse()
+        baseline_netlist.reset_traverse()
+
+        while True:
+            baseline_net = baseline_netlist.traverse()
+            compare_net = compare_netlist.traverse()
+
+            if baseline_net is None:
+                baseline_text = None
+            else:
+                baseline_text = baseline_net.diff_str(enable_pad=True, max_width=column_width)
+            if compare_net is None:
+                compare_text = None
+            else:
+                compare_text = compare_net.diff_str(enable_pad=True, max_width=column_width)
+
+            if baseline_net is None and compare_net is None:
+                break
+            elif baseline_net is not None and compare_net is None:
+                baseline_netlist.advance_traverse()
+            elif baseline_net is None and compare_net is not None:
+                compare_netlist.advance_traverse()
+            elif baseline_net.name < compare_net.name:
+                compare_text = None
+                baseline_netlist.advance_traverse()
+            elif baseline_net.name > compare_net.name:
+                baseline_text = None
+                compare_netlist.advance_traverse()
+            else:
+                compare_netlist.advance_traverse()
+                baseline_netlist.advance_traverse()
+            print_columns(baseline_text, compare_text, column_width)
+
     def diff(self, baseline_netlist):
         compare_netlist = self
 
         compare_netlist.clear_diffs(is_baseline=False)
+        compare_netlist.reset_traverse()
+
         baseline_netlist.clear_diffs(is_baseline=True)
+        baseline_netlist.reset_traverse()
 
         while True:
             baseline_net = baseline_netlist.traverse()
@@ -200,7 +243,7 @@ class TextManager():
         else:
             # Wrap text
             self._commit_line()
-            self.line = self._append_to_current_line(' ' * self.indent, text, color)
+            self.line = self._append_to_current_line('', ' ' * self.indent + text, color)
         # print(f'>>>{self.line}<<< {self.line_width}')
 
     def render(self):
@@ -224,6 +267,23 @@ class TextManager():
     def color_all(self, color):
         self._commit_line()
         self.lines = [color + line + Style.RESET_ALL for line in self.lines]
+
+def print_columns(left_text, right_text, column_width):
+    assert left_text is not None or right_text is not None
+    if left_text:
+        left_lines = left_text.split('\n')
+    if right_text:
+        right_lines = right_text.split('\n')
+    if not left_text:
+        left_lines = [' ' * column_width] * len(right_lines)
+    if not right_text:
+        right_lines = [''] * len(left_lines)
+    if len(left_lines) < len(right_lines):
+        left_lines += [' ' * column_width] * (len(right_lines) - len(left_lines))
+    elif len(left_lines) > len(right_lines):
+        right_lines += [''] * (len(left_lines) - len(right_lines))
+    for left_line, right_line in zip(left_lines, right_lines):
+        print(f'{left_line} | {right_line}')
 
 if __name__ == '__main__':
     main()
