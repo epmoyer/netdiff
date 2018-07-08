@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Compare two PADS netlists"""
 
 # Standard library
 from textwrap import indent
@@ -12,34 +13,41 @@ init()
 
 USAGE = (
 """Usage:
-    netdiff <file1> <file2>
+    netdiff [-d] <file1> <file2> [--width=<width>]
     netdiff -h | --help
     netdiff --version
 
 Options:
   -h --help               Show this screen.
-  --version               Show version
+  --version               Show version.
+  -d                      Show differences only.
+  --width=<width>         Column width [default: 40].
 """)
 
 __version__ = '0.1.0'
+arguments = None
 
 def main():
+    global arguments
     arguments = docopt(USAGE, version=__version__)
 
-    baseline_netlist = Netlist(arguments['<file1>'])
-    compare_netlist = Netlist(arguments['<file2>'])
+    baseline_filename = arguments['<file1>']
+    compare_filename = arguments['<file2>']
+
+    baseline_netlist = Netlist(baseline_filename)
+    compare_netlist = Netlist(compare_filename)
 
     compare_netlist.diff(baseline_netlist)
 
-    # baseline_netlist.dump_diff()
-    # compare_netlist.dump_diff()
-    # print()
-
-    column_width = 25
-    compare_netlist.dump_parallel_diff(baseline_netlist, column_width)
-    
+    column_width = int(arguments['--width'])
+    compare_netlist.dump_parallel_diff(
+        baseline_filename,
+        compare_filename,
+        baseline_netlist,
+        column_width)
 
 class Net:
+    """A PADS Net"""
     def __init__(self, name, nodes=None):
         self.name = name
         self.nodes = [] if nodes is None else nodes
@@ -48,15 +56,29 @@ class Net:
         self.differing_nodes = []
 
     def clear_diffs(self, is_baseline=True):
+        """Clear all difference history"""
         self.net_differs = False
         self.differing_nodes = []
         self.is_baseline = is_baseline
 
     def add_nodes(self, nodes):
+        """Add a list of nodes to the net"""
         self.nodes += nodes
         self.nodes.sort()
 
     def diff_str(self, max_width=25, enable_pad=False):
+        """Returns a formatted multiline string showing the differences
+        found associated with this net
+
+        Args:
+            max_width: The max width of the return string. If exceeded the
+                string will become multiline with word wrap.
+            enable_pad: If True, the string will be padded with spaces 
+                such that each line is max_width characters when printed
+                (the actual length may be longer, as it may contain color
+                codes)
+
+        """
         diff_color = Fore.RED if self.is_baseline else Fore.GREEN
         diff_symbol = '-' if self.is_baseline else '+'
 
@@ -64,22 +86,24 @@ class Net:
 
         if self.net_differs:
             text_manager.append(f'{diff_symbol}{self.name}: ')
-            for node in self.nodes:
-                text_manager.append(f'{node}, ')
+            for separator, node in CommaSeparate(self.nodes):
+                text_manager.append(node + separator)
             text_manager.color_all(diff_color)
             return text_manager.render()
         if not self.differing_nodes:
             text_manager.append(f' {self.name}: ')
-            for node in self.nodes:
-                text_manager.append(f'{node}, ')
+            for separator, node in CommaSeparate(self.nodes):
+                text_manager.append(node + separator)
             return text_manager.render()
 
         text_manager.append(f' {self.name}: ')
-        for node in self.nodes:
+        for separator, node in CommaSeparate(self.nodes):
             if node in self.differing_nodes:
-                text_manager.append(f'{diff_symbol}{node}, ', diff_color)
+                text_manager.append(
+                    diff_symbol + node + separator,
+                    diff_color)
             else:
-                text_manager.append(f'{node}, ')
+                text_manager.append(node + separator)
         return text_manager.render()
 
     def __repr__(self):
@@ -89,6 +113,7 @@ class Net:
         return f'{self.name}: {", ".join(self.nodes)}'
 
 class Netlist:
+    """A collection of PADS nets"""
     def __init__(self, filename):
         self.filename = filename
         self.nets = []
@@ -118,16 +143,33 @@ class Netlist:
         self.nets.sort(key=lambda x: x.name)
 
     def dump(self):
+        """Print all nets"""
         print(self.filename)
         for net in self.nets:
             print(indent(str(net), '   '))
 
     def dump_diff(self):
+        """Print all nets, with diff information"""
         print(self.filename)
         for net in self.nets:
             print(indent(net.diff_str(), '   '))
 
-    def dump_parallel_diff(self, baseline_netlist, column_width):
+    def dump_parallel_diff(
+        self,
+        baseline_filename,
+        compare_filename,
+        baseline_netlist,
+        column_width):
+        """Print a two column chart comparing the diffs between
+        two netlists"""
+
+        print(
+            to_snippet(baseline_filename, column_width).ljust(column_width) +
+            ' | ' +
+            to_snippet(compare_filename, column_width).ljust(column_width)
+            )
+        print(f'{"-" * (column_width + 1)}+{"-" * (column_width + 1)}')
+
         compare_netlist = self
 
         compare_netlist.reset_traverse()
@@ -161,9 +203,23 @@ class Netlist:
             else:
                 compare_netlist.advance_traverse()
                 baseline_netlist.advance_traverse()
+
+            # If requested, don't show nets that have no changes
+            if arguments['-d']:
+                diffs_exist = False
+                for net in (baseline_net, compare_net):
+                    if net is not None and (net.differing_nodes or net.net_differs):
+                        diffs_exist = True
+                if not diffs_exist:
+                    continue
+
             print_columns(baseline_text, compare_text, column_width)
 
     def diff(self, baseline_netlist):
+        """Generate the diff information between this netlist relative to a
+        baseline netlist
+        """
+
         compare_netlist = self
 
         compare_netlist.clear_diffs(is_baseline=False)
@@ -206,24 +262,34 @@ class Netlist:
                 baseline_netlist.advance_traverse()
 
     def clear_diffs(self, is_baseline):
+        """Clear all diff information"""
         self.is_baseline = is_baseline
         for net in self.nets:
             net.clear_diffs(is_baseline=is_baseline)
 
     def reset_traverse(self):
+        """Reset traversal for the traverse() function"""
         self._index_next_net = 0
 
     def traverse(self):
+        """Get the next net.
+        Subsequent calls will return the same net until advance_travese() is called.
+        Calls beyond the final net will return None
+        """
         if self._index_next_net >= len(self.nets):
             return None
         return self.nets[self._index_next_net]
 
     def advance_traverse(self):
+        """Advance to the next net.  Affects traverse().
+        """
         self._index_next_net += 1
 
 
 class TextManager():
-
+    """ Manage wrapping and colorizing to support later compositing of
+    text lines into a two column chart.
+    """
     def __init__(self, max_width=25, enable_pad=False, indent=4):
         self.lines = []
         self.line = ''
@@ -233,6 +299,7 @@ class TextManager():
         self.indent = indent
 
     def append(self, text, color=None):
+        """Append text to the current line"""
         if len(text) + self.line_width <= self.max_width:
             # No wrap
             self.line = self._append_to_current_line(self.line, text, color)
@@ -247,10 +314,12 @@ class TextManager():
         # print(f'>>>{self.line}<<< {self.line_width}')
 
     def render(self):
+        """Return the final string.  May be multi-line and multi-color"""
         self._commit_line()
         return '\n'.join(self.lines)
 
     def _commit_line(self):
+        """Commit the current line in progress, if one exists"""
         if self.line_width != 0:
             if self.enable_pad and self.line_width < self.max_width:
                 self.line += ' ' * (self.max_width - self.line_width)
@@ -259,16 +328,51 @@ class TextManager():
         self.line_width = 0
 
     def _append_to_current_line(self, text, append_text, color):
+        """Add text to the current line in progress"""
         self.line_width += len(append_text)
         if color is not None:
             return text + color + append_text + Style.RESET_ALL
         return text + append_text
 
     def color_all(self, color):
+        """Colorize all lines.
+        Should be called at the end, after all append() calls have been made.
+        """
         self._commit_line()
         self.lines = [color + line + Style.RESET_ALL for line in self.lines]
 
+def to_snippet(text, length=40):
+    """Shorten a string with ellipses as necessary to meet the target length"""
+    if len(text) <= length:
+        return text
+    return text[:length-3] + '...'
+
+class CommaSeparate:
+    """An iterator operating on a list of strings, returning tuples of (separator, string).
+    separator will be ', ' for all strings except the final, which will be ''.
+    """
+    def __init__(self, strings):
+        self.strings = strings
+        self.index_current = 0
+        self.index_last = len(strings) - 1
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.index_current > self.index_last:
+            raise StopIteration
+        else:
+            string = self.strings[self.index_current]
+            separator = '' if self.index_current == self.index_last else ', '
+            self.index_current += 1
+            return (separator, string)
+
 def print_columns(left_text, right_text, column_width):
+    """Print two columns of text given two strings of multi-line text.
+    Either (but not both) text string may be None.
+    Text will be separated by a vertical bar with one space of pad on either side (' | ')
+    """
     assert left_text is not None or right_text is not None
     if left_text:
         left_lines = left_text.split('\n')
